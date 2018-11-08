@@ -1,2 +1,4 @@
 # ML_Lab
-Machine Learning Lab
+
+
+This is a NYCDSA Machine Learning Lab project
