@@ -1,0 +1,330 @@
+---
+title: "Machine Learning Lab Solutions"
+author: "NYC Data Science Academy"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Part 1: Preprocessing and EDA
+
+- The data comes from a global e-retailer company, including orders from 2012 to 2015. Import the **Orders** dataset and do some basic EDA. 
+- For problem 1 to 3, we mainly focus on data cleaning and data visualizations. You can use **dplyr**, **tidyr**, **ggplot2** or **plotly** to conduct some plots and also provide **brief interpretations** about your findings.
+
+### Problem 1: Dataset Import & Cleaning
+Check **"Profit"** and **"Sales"** in the dataset, convert these two columns to numeric type. 
+```{r}
+# Your code here
+library(ggplot2)
+library(dplyr)
+orders <- read.csv("data/Orders.csv", header = T, stringsAsFactors = F)
+number.cleaner <- function(x){
+  word <- unlist(strsplit(x, split='$', fixed=TRUE))
+  word <- paste0(word[1], word[2])
+  word <- as.numeric(gsub(",", "", word)) # can also use gsub for the $ sign
+}
+
+orders$Sales <- sapply(orders$Sales, number.cleaner)
+orders$Profit <- sapply(orders$Profit, number.cleaner)
+
+# Another method:
+# orders$New_sales = as.numeric(gsub('\\$|,', '', orders$Sales))
+# orders$New_profit = as.numeric(gsub('\\$|,', '', orders$Profit))
+```
+
+
+### Problem 2: Inventory Management
+- Retailers that depend on seasonal shoppers have a particularly challenging job when it comes to inventory management. Your manager is making plans for next year's inventory.
+- He wants you to answer the following questions:
+    1. Is there any seasonal sales trend in the company?
+    2. Is the seasonal trend the same for different categories?
+- For each order, it has an attribute called `Quantity` that indicates the number of product in the order. If an order contains more than one product, there will be multiple observations of the same order.
+
+First, we use line chart to show the trend during these years:
+
+```{r}
+# Your code here
+library(lubridate)
+orders$Order.Date <- as.Date(orders$Order.Date,"%m/%d/%y")
+orders$Order.Month <- month(orders$Order.Date)
+daily <- orders %>%
+  group_by(Order.Date) %>%
+  summarise( daily_quantity=sum(Quantity))
+
+ggplot(daily, aes(Order.Date, daily_quantity)) + 
+  geom_line() +
+  xlab("Time") + 
+  ylab("Daily Orders Sales") +
+  theme_bw() +
+  geom_smooth()
+```
+
+This plots implies there is seasonal trend, so we can investigate if the series are influenced by the month.
+
+```{r}
+monthly <- orders %>%
+  group_by(Order.Month) %>%
+  summarise(monthly_quantity=sum(Quantity))
+
+ggplot(monthly, aes(as.factor(Order.Month), monthly_quantity, group=1)) + 
+  geom_line(color="Blue") +
+  xlab("Month") + 
+  ylab("Monthly Sales") +
+  theme_bw()
+```
+
+```{r}
+month_cat <- orders %>%
+  group_by(Order.Month, Category)%>%
+  summarise(monthly_quantity=sum(Quantity))
+ggplot(month_cat, aes(as.factor(Order.Month), monthly_quantity, group=Category, color=Category)) +
+  geom_line() +
+  xlab("Month") + 
+  ylab("Daily Orders") +
+  theme_bw()
+```
+
+Looks like there is a peak during the holiday seasons and big drops in July and October.
+
+
+### Problem 3: Why did customers make returns?
+- Your manager required you to give a brief report (**Plots + Interpretations**) on returned orders.
+- *Hint*:
+    - Import **Returns.csv**
+    - Merge the **Returns** dataframe with the **Orders** dataframe using `Order.ID`.
+    - Only keep the observations from the **Returns** dataframe
+
+1. How much profit did we lose due to returns each year?
+
+```{r}
+# Your code here
+returns <- read.csv("data/Returns.csv", header=T, stringsAsFactors = F)
+
+# combine with the orders dataframe
+returns <- left_join(returns[,1:2], orders, by=c("Order.ID"))
+
+returns$Year <- year(returns$Order.Date)
+years <- returns %>%
+  group_by(Year) %>%
+  summarise(Total_lost=sum(abs(Profit)))
+
+ggplot(years, aes(x=as.factor(Year), y=Total_lost)) +
+  geom_bar(aes(fill=as.factor(Year)), stat="identity") +
+  ggtitle("Profits Lost Each Year") +
+  xlab("Year") +
+  ylab("Total Lost")
+```
+
+2. How many customer returned more than once? more than 5 times?
+```{r}
+# Your code here
+
+Customer <- returns %>%
+  group_by(Customer.ID) %>%
+  summarise(Num_of_Returns=n())
+
+ggplot(Customer, aes(x=Num_of_Returns)) +
+  geom_histogram(bins = 10) +
+  theme_bw()
+```
+
+
+3. Which regions are more likely to return orders?
+
+```{r}
+# Your code here
+library(DT)
+Reg <- returns %>%
+  group_by(Region) %>%
+  summarise(Num_of_Returns=n()) %>%
+  arrange(desc(Num_of_Returns))
+
+datatable(Reg)
+```
+
+Customers in Central America and Western Europe are more likely to return products.
+
+
+4. Which categories (sub-categories) of products are more likely to be returned?
+
+```{r}
+# Your code here
+Pro_cat <- returns %>%
+  group_by(Category,Sub.Category) %>%
+  summarise(Num_of_Returns=n()) %>%
+  arrange(desc(Num_of_Returns))
+
+# By Category
+ggplot(Pro_cat, aes(x=reorder(Category, Num_of_Returns), y=Num_of_Returns)) +
+  geom_bar(aes(fill=Category), stat="identity")
+
+# By Sub.Category
+ggplot(Pro_cat, aes(x=reorder(Sub.Category, Num_of_Returns), y=Num_of_Returns)) +
+  geom_bar(aes(fill=Category), stat="identity") +
+  theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+Office supplies was the category that got returned the most.
+
+## Part II: Machine Learning and Business Use-Case
+
+Now your manager has a basic idea of why customers returned orders. Next, he wants you to use machine learning to predict which orders are most likely to be returned. In this part, you will generate several features based on our previous findings and your manager's requirements.
+
+### Problem 4: Feature Engineering
+#### Step 1: Create the dependent variable
+First of all, we need to generate a categorical variable which indicates whether an order has been returned or not.
+
+*Hint*: the returned orders’ IDs are contained in the dataset “returns”
+
+```{r}
+# Your code here
+orders$Returned = ifelse(orders$Order.ID %in% returns$Order.ID,"Yes","No")
+```
+
+#### Step 2:
+- Your manager believes that **how long it took the order to ship** would affect whether the customer would return it or not. 
+- He wants you to generate a feature which can measure how long it takes the company to process each order.
+
+*Hint*: Process.Time = Ship.Date - Order.Date
+
+```{r}
+# Your code here
+orders$Ship.Date<-as.Date(orders$Ship.Date,"%m/%d/%y")
+orders$Process.Time<-as.numeric(orders$Ship.Date-orders$Order.Date)
+```
+
+#### Step 3:
+
+- If a product has been returned previously, it may be returned again. 
+- Let us generate a feature indictes how many times the product has been returned before.
+- If it never got returned, we just impute using 0.
+
+*Hint*: Group by different Product.ID
+
+```{r}
+# Your code here
+Product <- orders%>%
+group_by(Product.ID)%>%
+summarise(Return.Times=n())
+
+orders<-left_join(orders,Product,by=c("Product.ID"))
+orders$Return.Times[is.na(orders$Return.Times)] <- 0
+```
+
+### Problem 5: Fitting Models
+
+- You can use any binary classification method you have learned so far. 
+- Double check the column types before you fit the model. i.e. change all the character columns to factor.
+- Only include useful features. i.e all the `ID`s should be excluded from your training set.
+- **Note:** We are not looking for the best tuned model in the lab so don't spend too much time on grid search cross-validation. Focus on model evaluation and the business use case of the model.
+
+```{r}
+# Your code here
+# use_columns = c('Ship.Mode', 'Segment', 'Region', 'Category', 'Sub.Category', 'Sales', 'Quantity', 'Discount', 'Profit', 'Shipping.Cost', 'Order.Priority', 'Order.Month', 'Returned', 'Process.Time', 'Return.Times')
+
+use_columns = c('Sales', 'Quantity', 'Discount', 'Process.Time', 'Return.Times', 'Returned', 'Ship.Mode', 'Region', 'Category', 'Order.Month', 'Order.Priority')
+
+# Change all character columns to factor
+data=orders[,use_columns]
+data <- data %>% mutate_if(is.character,as.factor)
+```
+
+- Use 80/20 training and test splits to build your model. 
+- Not that there are only less than 5% of the orders have been returned, so you should consider using the `createDataPartition` function from `caret` package that does a **stratified** random split of the data.
+- Do forget to `set.seed()` before the spilt to make your result reproducible.
+- What is the best metric to evaluate your model. Is accuracy good for this case?
+
+- This is an imbalanced dataset so I would achieve more than 95% accuracy rate even if I always predict 'No'. In this case, accuracy is not a good metric. 
+- ROC curve or F1 score works better for this task.
+
+```{r}
+# Your code here
+library(caret)
+set.seed(100)
+
+train.index <- createDataPartition(orders$Returned, p = .8, list = FALSE)
+data.train = data[train.index, ]
+data.test = data[-train.index, ]
+```
+
+
+```{r}
+# Fit a logistic regression model
+
+# We didn't do any cross validation here just to save time.
+library(pROC)
+fitControl <- trainControl(method = "none", 
+                           classProbs = TRUE,
+                           verboseIter = TRUE,
+                           summaryFunction = twoClassSummary)
+
+glm_model <- train(Returned ~ ., 
+                   data=data.train, 
+                   method="glm",
+                   metric = "ROC",
+                   maximize = TRUE,
+                   trControl = fitControl)
+
+probsTrain <- predict(glm_model, data.train, type = "prob")
+rocCurve   <- roc(response = data.train$Returned,
+                  predictor = probsTrain[, "Yes"],
+                  levels = levels(data.train$Returned))
+plot(rocCurve, print.thres = "best")
+
+# Find the best threshold from the ROC curve
+probsTest <- predict(glm_model, data.test, type = "prob")
+threshold <- 0.041
+pred      <- factor( ifelse(probsTest[, "Yes"] > threshold, "Yes", "No") )
+confusionMatrix(pred, data.test$Returned, positive='Yes')
+```
+
+
+
+```{r}
+# Your code here
+# Fit a random forest model
+fitControl <- trainControl(method = "none", 
+                           classProbs = TRUE,
+                           verboseIter = TRUE)
+
+# We only take mtry= sqrt(#column) here because random forest is really slow in R so we don't want to try crazy gridsearch.
+rf_model <- train(Returned ~ ., 
+                  data=data.train, 
+                  method="rf",
+                  metric = "ROC",
+                  maximize = TRUE,
+                  tuneGrid = data.frame('mtry'= 6),
+                  trControl = fitControl)
+
+
+probsTrain <- predict(rf_model, data.train, type = "prob")
+rocCurve   <- roc(response = data.train$Returned,
+                  predictor = probsTrain[, "Yes"],
+                  levels = levels(data.train$Returned))
+plot(rocCurve, print.thres = "best")
+
+# Find the best threshold from the ROC curve
+probsTest <- predict(rf_model, data.test, type = "prob")
+threshold <- 0.107
+pred      <- factor( ifelse(probsTest[, "Yes"] > threshold, "Yes", "No") )
+confusionMatrix(pred, data.test$Returned, positive='Yes')
+```
+
+
+- Now you have multiple models, which one would you pick? 
+- Can you get any clue from the confusion matrix? What is the meaning of precision and recall in this case?
+- How will your model help the manager make decisions? 
+
+It really depends your understanding of the business model. For example, if I find a product that has a high probability that will get returned, I would recommend my manager to put it on final sale so the customer get it for a lower price but they are not allowed to return the product. However, if the product turned out to be just fine and we are losing profit because we give it a discount. In that case, I would prefer a model that has a relatively good accuracy with better precision (lower Type I error). 
+
+
+### Problem 6:
+Is there anything wrong with the feature engineering process? How should we fix it?
+
+- The `Return.Times` feature was wrong. If we want to use training data set to fit a model and test dataset to test a model, we assume test dataset is new data we get after fitting the model. But using the whole dataset to count the times will actually indicate these items will be returned in the test dataset. That's why the process is invalid.
+
+- The easiest way to fix the problem is to split the train and test set by different timespan. You can use 2012-2014 data for training and 2015 data as testing. It will mimic the same scenario in real life: **you don't know what's going to happen in the future :)**
+
+- A great [blog post](http://www.fast.ai/2017/11/13/validation-sets/) from fast.ai discussing this problem.
